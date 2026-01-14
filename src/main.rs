@@ -9,42 +9,35 @@
 use axum::{
     Router,
      body::{Body, Bytes}, 
-    extract::{ //FromRef, FromRequest,
-       Request, State,// Extension,
-      ws::{ WebSocketUpgrade,WebSocket,Message//, Utf8Bytes
+    extract::{ 
+       Request, State,
+      ws::{ WebSocketUpgrade,WebSocket,Message
       }}, 
-      http::{
-      //header::CONTENT_TYPE, 
-      //HeaderMap,
-      //Method,
-      StatusCode,
-     // Version
-    }, middleware::{self, Next},
+      http::{StatusCode }, middleware::{self, Next},
      response::{IntoResponse, Response}, routing::{any,get}
     
 };
-//use tracing::info;
-//use serde::{Deserialize, Serialize};
+
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use tokio::signal;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::Sender;
-use tower_http::services::ServeDir;
-use std::{//any::Any, 
-  path::PathBuf,
-  sync::{Arc//, Mutex
-  },
- // collections::HashSet,
+
+use std::{
+   sync::{Arc },
   env};
 use http_body_util::BodyExt;
+use rust_embed::RustEmbed;
+
 
 // Our shared state
 struct AppState {
-    // We require unique usernames. This tracks which usernames have been taken.
-    //user_set: Mutex<HashSet<String>>,
-    // Channel used to send messages to all connected clients.
     tx: broadcast::Sender<String>,
 }
+
+#[derive(RustEmbed, Clone)]
+#[folder = "assets/"]
+struct Assets;
 
 #[tokio::main]
 async fn main() {
@@ -57,18 +50,24 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let bind_address = env::var("HTTP_DUMP_BIND").unwrap_or("0.0.0.0:3100".to_string());
 
-    let assets_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
 
-   // let user_set = Mutex::new(HashSet::new());
+    let assets = axum_embed::ServeEmbed::<Assets>::with_parameters(
+            None,
+        axum_embed::FallbackBehavior::NotFound,
+        Some("index.html".to_owned())
+    );
+
+    let bind_address = env::var("HTTP_DUMP_BIND").unwrap_or("0.0.0.0:8089".to_string());
+
     let (tx, _rx) = broadcast::channel(100);
 
-    //let app_state = Arc::new(AppState {user_set, tx });
     let app_state = Arc::new(AppState { tx });
 
     let app = Router::new()
-    .fallback_service(ServeDir::new(assets_dir).append_index_html_on_directories(true))
+    .fallback_service(assets)
+   // .nest_service("/",assets)
+     
        
         .route("/ws", get(websocket_handler))
         .route("/", any(|| async move { /* ... */ }))
