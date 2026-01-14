@@ -27,7 +27,7 @@ use std::{
    sync::{Arc },
   env};
 use http_body_util::BodyExt;
-use rust_embed::RustEmbed;
+use rust_embed::Embed;
 
 
 // Our shared state
@@ -35,7 +35,7 @@ struct AppState {
     tx: broadcast::Sender<String>,
 }
 
-#[derive(RustEmbed, Clone)]
+#[derive(Embed, Clone)]
 #[folder = "assets/"]
 struct Assets;
 
@@ -65,16 +65,17 @@ async fn main() {
     let app_state = Arc::new(AppState { tx });
 
     let app = Router::new()
-    .fallback_service(assets)
+   //.fallback_service(assets)
    // .nest_service("/",assets)
      
        
         .route("/ws", get(websocket_handler))
         .route("/", any(|| async move { /* ... */ }))
-
+      .route("/", get(index_handler))
+    .route("/index.html", get(index_handler))
        .layer(middleware::from_fn_with_state(app_state.clone(),print_request_response))
        //.route_layer(middleware::from_fn_with_state(app_state.clone(),print_request_response))
-       
+        .fallback_service(get(not_found))
        .with_state(app_state);
 
 
@@ -116,7 +117,10 @@ async fn websocket(mut stream: WebSocket, state: Arc<AppState>) {
 
 
 
-
+// Finally, we use a fallback route for anything that didn't match.
+async fn not_found() -> Html<&'static str> {
+  Html("<h1>404</h1><p>Not Found</p>")
+}
 
 async fn print_request_response(
    State(state): State<Arc<AppState>>,
@@ -161,6 +165,38 @@ where
     }
 
     Ok(bytes)
+}
+
+// We use static route matchers ("/" and "/index.html") to serve our home
+// page.
+async fn index_handler() -> impl IntoResponse {
+  static_handler(Path("index.html".to_string())).await
+}
+
+// We use a wildcard matcher ("/dist/*file") to match against everything
+// within our defined assets directory. This is the directory on our Asset
+// struct below, where folder = "examples/public/".
+async fn static_handler(Path(path): Path<String>) -> impl IntoResponse {
+  StaticFile(path)
+}
+
+pub struct StaticFile<T>(pub T);
+
+impl<T> IntoResponse for StaticFile<T>
+where
+  T: Into<String>,
+{
+  fn into_response(self) -> Response {
+    let path = self.0.into();
+
+    match Asset::get(path.as_str()) {
+      Some(content) => {
+        let mime = mime_guess::from_path(path).first_or_octet_stream();
+        ([(header::CONTENT_TYPE, mime.as_ref())], content.data).into_response()
+      }
+      None => (StatusCode::NOT_FOUND, "404 Not Found").into_response(),
+    }
+  }
 }
 
 async fn shutdown_signal() {
