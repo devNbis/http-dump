@@ -7,11 +7,22 @@
   .res{color:cornflowerblue}
   .res_err{color:red}
 </style>
+
 <title>HTTP(S) dump tool</title>
 </head>
 <body>
 <h1>Dump http(s) traffic from server <span id="host"></span></h1>
 <div id="messages" style="width:100%;display:block;list-style-position: inside;list-style-type: disclosure-open;"><br/></div>
 </body>
-<script src='script.js'></script>
+<script type="text/javascript">
+  const host= window.location.host;
+document.getElementById("host").append(host);
+const socket = new WebSocket('ws://'+host+'/ws');
+socket.addEventListener('message', e => {
+    var item=document.createElement("li");
+    item.setAttribute("class",e.data.startsWith("Request")?"req":e.data.includes("status: 20")?"res":"res_err");
+    item.append(e.data);
+    document.getElementById("messages").firstElementChild.before( item);
+});
+</script>
 </html>

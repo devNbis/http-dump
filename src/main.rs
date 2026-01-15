@@ -9,20 +9,24 @@
 use axum::{
     Router,
      body::{Body, Bytes}, 
+
     extract::{ 
-       Request, State,
+       Request, State,Path,
       ws::{ WebSocketUpgrade,WebSocket,Message
       }}, 
-      http::{StatusCode }, middleware::{self, Next},
-     response::{IntoResponse, Response}, routing::{any,get}
+      http::{header,StatusCode },
+      debug_middleware,
+       middleware::{self, Next},
+     response::{IntoResponse, Response, Html}, routing::{any,get}
     
 };
 
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use tokio::signal;
 use tokio::sync::broadcast;
+use tokio::sync::Mutex;
 use tokio::sync::broadcast::Sender;
-
+use tower::ServiceBuilder;
 use std::{
    sync::{Arc },
   env};
@@ -32,12 +36,18 @@ use rust_embed::Embed;
 
 // Our shared state
 struct AppState {
+  count:Mutex<i32>,
+   err400_count:i32,
+   err500_count:i32,
+  
     tx: broadcast::Sender<String>,
 }
 
+
+
 #[derive(Embed, Clone)]
 #[folder = "assets/"]
-struct Assets;
+struct Asset;
 
 #[tokio::main]
 async fn main() {
@@ -50,32 +60,26 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-
-
-    let assets = axum_embed::ServeEmbed::<Assets>::with_parameters(
-            None,
-        axum_embed::FallbackBehavior::NotFound,
-        Some("index.html".to_owned())
-    );
-
     let bind_address = env::var("HTTP_DUMP_BIND").unwrap_or("0.0.0.0:8089".to_string());
-
+    let err400_count: i32= env::var("HTTP_DUMP_ERR400_COUNT").unwrap_or("0".to_string()).parse().expect("Failed env var.");
+    let err500_count: i32= env::var("HTTP_DUMP_ERR500_COUNT").unwrap_or("0".to_string()).parse().expect("Failed env var.");
+   
     let (tx, _rx) = broadcast::channel(100);
 
-    let app_state = Arc::new(AppState { tx });
+    let app_state = Arc::new(AppState {count:Mutex::new(0), err400_count ,err500_count,tx });
 
     let app = Router::new()
-   //.fallback_service(assets)
-   // .nest_service("/",assets)
-     
-       
+       .fallback_service(get(not_found))
         .route("/ws", get(websocket_handler))
-        .route("/", any(|| async move { /* ... */ }))
+        .route("/{*wildcard}", any(|| async move { /* ... */ }))
       .route("/", get(index_handler))
     .route("/index.html", get(index_handler))
+    .route("/favicon.ico", get(favicon_handler))
+    .layer(
+        ServiceBuilder::new()
        .layer(middleware::from_fn_with_state(app_state.clone(),print_request_response))
-       //.route_layer(middleware::from_fn_with_state(app_state.clone(),print_request_response))
-        .fallback_service(get(not_found))
+       .layer(middleware::from_fn_with_state(app_state.clone(),response_on_error_counts))
+    )
        .with_state(app_state);
 
 
@@ -122,6 +126,41 @@ async fn not_found() -> Html<&'static str> {
   Html("<h1>404</h1><p>Not Found</p>")
 }
 
+#[debug_middleware]
+async fn response_on_error_counts(
+ State(state): State<Arc<AppState>>,
+    req: Request,
+    next: Next,
+    
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let mut count = state.count.lock().await;
+    *count += 1;
+     tracing::debug!("request counter: {}, 400er: {}, 500er: {}",*count, state.err400_count, state.err500_count);
+    if is_factor( state.err400_count ,*count) {
+      
+
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "".to_string()),
+            )
+       ;
+    }
+    if is_factor( state.err500_count ,*count) {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "".to_string()),
+            )
+          ;
+    }
+    //let (parts, body) = req.into_parts();
+    let res = next.run(req).await;
+    //let res = Response::from_parts(parts,body);
+    Ok(res)
+  
+}
+
+
+#[debug_middleware]
 async fn print_request_response(
    State(state): State<Arc<AppState>>,
     req: Request,
@@ -129,8 +168,27 @@ async fn print_request_response(
     
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let (parts, body) = req.into_parts();
+
     let bytes = buffer_and_print(format!("Request: {:?}",parts).as_str(), body, state.tx.clone()).await?;
+    /* let mut count = state.count.lock().await;
+     tracing::debug!("request counter: {}, 400er: {}, 500er: {}",*count, state.err400_count, state.err500_count);
+    *count += 1;
     
+    if is_factor( state.err400_count ,*count) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "".to_string()),
+            )
+          ;
+    }
+    if is_factor( state.err500_count ,*count) {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "".to_string()),
+            )
+          ;
+    }*/
+
     let req = Request::from_parts(parts, Body::from(bytes));
 
     let res = next.run(req).await;
@@ -158,19 +216,29 @@ where
     };
 
     if let Ok(body) = std::str::from_utf8(&bytes) {
-        
         let _ = tx.send(format!("{direction} body = {body:?}"));
-        
         tracing::debug!("{direction} body = {body:?}");
     }
 
     Ok(bytes)
 }
 
+fn is_factor( factor:i32, number:i32) -> bool {
+  if factor == 0  {
+    return false;
+  }
+  number % factor ==0
+}
 // We use static route matchers ("/" and "/index.html") to serve our home
 // page.
 async fn index_handler() -> impl IntoResponse {
   static_handler(Path("index.html".to_string())).await
+}
+
+// We use static route matchers ("/favicon.ico") to serve our home
+// page.
+async fn favicon_handler() -> impl IntoResponse {
+  static_handler(Path("favicon.ico".to_string())).await
 }
 
 // We use a wildcard matcher ("/dist/*file") to match against everything
