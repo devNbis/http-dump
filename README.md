@@ -2,7 +2,7 @@
 
 This is a simple single file request response dump tool for http(s) traffic into log or live into a web side without persistence.
 
-It is written in RUST an cen we used wherever a target compilation can run.
+It is written in RUST and can be used wherever a target compilation can run.
 
 ## Local execution
 
