@@ -1,7 +1,8 @@
 [package]
-name = "http_dump"
+name = "http-dump"
 version = "0.1.0"
 edition = "2024"
+description = "Programm for dump http(s) traffic into system log or live http view"
 
 [dependencies]
 axum = {version="0.8.8", features = ["ws", "http2", "macros"] }

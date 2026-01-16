@@ -20,32 +20,51 @@ use axum::{
     routing::{any, get},
 };
 
+use clap::Parser;
 use http_body_util::BodyExt;
 use rust_embed::Embed;
-use std::{collections::HashMap,  sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 use tokio::signal;
-use tokio::sync::Mutex;
-use tokio::sync::broadcast;
-use tokio::sync::broadcast::Sender;
+use tokio::sync::{Mutex, broadcast, broadcast::Sender};
 use tower::ServiceBuilder;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use clap::Parser;
 
-/// Programm for mapping of json via jolt
+/// Programm for dump http(s) traffic into system log or live http view
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
     /// Binding of the web server
-    #[arg(short, long, value_name = "IP:Port", env="HTTP_DUMP_BIND",default_value ="0.0.0.0:8089", help="host address include port")]
+    #[arg(
+        short,
+        long,
+        value_name = "IP:Port",
+        env = "HTTP_DUMP_BIND",
+        default_value = "0.0.0.0:8089",
+        help = "host address include port"
+    )]
     bind: String,
 
     /// Error map definition
-    #[arg(short, long, value_name = "MAP",env="HTTP_DUMP_ERROR_MAP",default_value ="", help="string as mapp with <count>:<error> delimiter ; \nsample: \"4:500,6:400\"\nresponed with error on every 4th call with 500 and every 6th call with 400")]
+    #[arg(
+        short,
+        long,
+        value_name = "MAP",
+        env = "HTTP_DUMP_ERROR_MAP",
+        default_value = "",
+        help = "string as mapp with <count>:<error> delimiter ; \nsample: \"4:500,6:400\"\nresponed with error on every 4th call with 500 and every 6th call with 400"
+    )]
     error_map: String,
 
     /// logging definition
-    #[arg(short, long, value_name = "LOG",env="HTTP_DUMP_TRACELOG",default_value ="info,tower=info", help="logging definition")]
-    tracelog: String
+    #[arg(
+        short,
+        long,
+        value_name = "LOG",
+        env = "HTTP_DUMP_TRACELOG",
+        default_value = "info,tower=info",
+        help = "logging definition"
+    )]
+    tracelog: String,
 }
 
 // Our shared state
@@ -63,12 +82,11 @@ struct Asset;
 
 #[tokio::main]
 async fn main() {
-     let cli = Cli::parse();
+    let cli = Cli::parse();
     tracing_subscriber::registry()
         .with(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                cli.tracelog.into()
-            }),
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| cli.tracelog.into()),
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
@@ -92,6 +110,7 @@ async fn main() {
         .route("/", get(index_handler))
         .route("/index.html", get(index_handler))
         .route("/favicon.ico", get(favicon_handler))
+        .route("/logo.svg", get(logo_handler))
         .layer(
             ServiceBuilder::new()
                 .layer(middleware::from_fn_with_state(
@@ -106,7 +125,7 @@ async fn main() {
         .with_state(app_state);
 
     let listener = tokio::net::TcpListener::bind(bind_address).await.unwrap();
-    tracing::debug!("listening on {}", listener.local_addr().unwrap());
+    tracing::info!("Listening on {}", listener.local_addr().unwrap());
     #[allow(unused)]
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
@@ -141,12 +160,8 @@ async fn websocket_handler(
     ws.on_upgrade(|socket| websocket(socket, state))
 }
 
-// This function deals with a single websocket connection, i.e., a single
-// connected client / user, for which we will spawn two independent tasks (for
-// receiving / sending chat messages).
+// This function will send the dumps to an websocket target
 async fn websocket(mut stream: WebSocket, state: Arc<AppState>) {
-    // By splitting, we can send and receive at the same time.
-    //let (mut sender, mut receiver) = stream.split();
     let mut rx = state.tx.subscribe();
     let mut _send_task = tokio::spawn(async move {
         while let Ok(msg) = rx.recv().await {
@@ -158,7 +173,7 @@ async fn websocket(mut stream: WebSocket, state: Arc<AppState>) {
     });
 }
 
-// Finally, we use a fallback route for anything that didn't match.
+// Finally, a fallback route for anything that didn't match.
 async fn not_found() -> Html<&'static str> {
     Html("<h1>404</h1><p>Not Found</p>")
 }
@@ -169,13 +184,15 @@ async fn response_on_error_counts(
     req: Request,
     next: Next,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let mut count = state.count.lock().await;
-    *count += 1;
-    tracing::debug!("request counter: {}", *count);
+    if !req.uri().path().contains("logo.svg") && !req.uri().path().contains("favicon.ico") {
+        let mut count = state.count.lock().await;
+        *count += 1;
+        tracing::debug!("request counter: {}", *count);
 
-    for err_map in &state.clone().error_map {
-        if is_factor(*err_map.0, *count) {
-            return Ok(err_map.1.into_response());
+        for err_map in &state.clone().error_map {
+            if is_factor(*err_map.0, *count) {
+                return Ok(err_map.1.into_response());
+            }
         }
     }
     let res = next.run(req).await;
@@ -248,6 +265,7 @@ fn is_factor(factor: i32, number: i32) -> bool {
     }
     number % factor == 0
 }
+
 // We use static route matchers ("/" and "/index.html") to serve our home
 // page.
 async fn index_handler() -> impl IntoResponse {
@@ -258,6 +276,12 @@ async fn index_handler() -> impl IntoResponse {
 // page.
 async fn favicon_handler() -> impl IntoResponse {
     static_handler(Path("favicon.ico".to_string())).await
+}
+
+// We use static route matchers ("/logo.svg") to serve our home
+// page.
+async fn logo_handler() -> impl IntoResponse {
+    static_handler(Path("logo.svg".to_string())).await
 }
 
 // We use a wildcard matcher ("/dist/*file") to match against everything
