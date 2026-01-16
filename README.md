@@ -50,6 +50,15 @@ http-dump -e "6:400;7:500"
 You can bind the server with the --bind options to any host or port you want.
 The server is path agnostic, every path will be dumped.
 
+#### HTTP traffic live web view
+
+There is a web view for the traffic available to live view the data. This contains no history data. It be opened inside a browser at the bind `host` and `port` via `/index.html` 
+
+With default configuration use:
+```
+http://localhost:8089
+```
+
 ## Docker, Podman
 
 Deploy and run inside of Docker or Podman is possible.
