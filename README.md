@@ -29,6 +29,8 @@ Options:
                          sample: "4:500,6:400"
                          responed with error on every 4th call with 500 and every 6th call with 400 [env: HTTP_DUMP_ERROR_MAP=] [default: ]
   -t, --tracelog <LOG>   logging definition [env: HTTP_DUMP_TRACELOG=] [default: info,tower=info]
+  -d, --disable-health-dump  disable /health path dump [env: HTTP_DUMP_DISABLE_HEATLTH_DUMP=false]
+  -w, --err-resp-warn        logging error response as warn [env: HTTP_DUMP_ERR_RESP_WARN=]
   -h, --help             Print help
   -V, --version          Print version
 ``` 
@@ -82,6 +84,23 @@ echo 'HTTP_DUMP_ERROR_MAP="6:400;7:500"' > http-dump.env
 docker run --env-file http-dump.env
 podman run --env-file http-dump.env
 ```
+
+## Health check
+
+By using the tool inside an environment with health check set the option to disable the log of the `/health` path. Otherwise these path are also logged.
+
+Set the environment variable of `HTTP_DUMP_DISABLE_HEATLTH_DUMP=true`.
+
+Or modify the Dockerfile by setting the CMD to:
+```dockerfile
+CMD ["./http-dump -d"]
+```
+
+## Kubernetes
+
+To deploy the service inside of Kubernetes, a sample deployment and service is available inside the [k8s](./k8s) folder.
+
+Please change the `spec.template.spec.containers.image` definition and the `HTTP_DUMP_ERROR_MAP`, `HTTP_DUMP_ERR_RESP_WARN` environment variables to your need.
 
 ## License
 

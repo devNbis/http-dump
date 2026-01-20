@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: http-dump-deployment
+  namespace: default
+  labels:
+    app: http-dump
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: http-dump
+  template:
+    metadata:
+      labels:
+        app: http-dump
+    spec:
+      securityContext:
+        runAsUser: 1001
+      resources:
+        limits:
+          cpu: "0.5"
+          memory: "5Mi"
+        requests:
+          cpu: "0.3"
+          memory: "2.5Mi"
+      containers:
+        - name: http-dump
+          image: localhost:5050/nbis-dev/http-dump:latest # replace this with your container registry and image
+          resources:
+          ports:
+            - containerPort: 8089
+              name: http-dump-svbc
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http-dump-svbc
+            failureThreshold: 1
+            periodSeconds: 10
+            initialDelaySeconds: 2
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http-dump-svbc
+            failureThreshold: 10
+            periodSeconds: 10
+            initialDelaySeconds: 1
+          env:
+            - name: HTTP_DUMP_DISABLE_HEATLTH_DUMP
+              value: "true"
+            - name: HTTP_DUMP_ERROR_MAP # if not nedded delete it
+              value: "6:400;7:500" # replace this with your error requrements
+            - name: HTTP_DUMP_ERR_RESP_WARN
+              value: "true"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: http-dump-service
+  namespace: default
+  labels:
+    name: http-dump
+spec:
+  ports:
+    - port: 8089
+      targetPort: http-dump-svbc
+      name: http
+      protocol: TCP
+  selector:
+    app: http-dump
+  type: ClusterIP

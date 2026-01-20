@@ -1,4 +1,4 @@
-//! Provides a RESTful web server managing some Todos.
+//! Provides a RESTful web server.
 //!
 //! Run with
 //!
@@ -14,7 +14,7 @@ use axum::{
         Path, Request, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    http::{StatusCode, header},
+    http::{Method, StatusCode, header},
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::{any, get},
@@ -30,7 +30,7 @@ use tower::ServiceBuilder;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Programm for dump http(s) traffic into system log or live http view
-#[derive(Parser)]
+#[derive(Parser, PartialEq, Debug)]
 #[command(version, about, long_about = None)]
 struct Cli {
     /// Binding of the web server
@@ -65,6 +65,24 @@ struct Cli {
         help = "logging definition"
     )]
     tracelog: String,
+    /// disable dump for path get /health
+    #[arg(
+        short,
+        long,
+        env = "HTTP_DUMP_DISABLE_HEATLTH_DUMP",
+        default_value = "false",
+        help = "disable /health path dump"
+    )]
+    disable_health_dump: bool,
+    /// logging of error response as warn
+    #[arg(
+        short('w'),
+        long,
+        env = "HTTP_DUMP_ERR_RESP_WARN",
+        default_value = "false",
+        help = "logging error response as warn"
+    )]
+    err_resp_warn: bool,
 }
 
 // Our shared state
@@ -72,7 +90,8 @@ struct Cli {
 struct AppState {
     count: Mutex<i32>,
     error_map: HashMap<i32, StatusCode>,
-
+    disable_health_dump: bool,
+    err_resp_warn: bool,
     tx: broadcast::Sender<String>,
 }
 
@@ -83,6 +102,7 @@ struct Asset;
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+    tracing::debug!("Cli params {:#?}", cli);
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -92,16 +112,16 @@ async fn main() {
         .init();
 
     let bind_address = cli.bind;
-
     let error_map = build_error_map(cli.error_map);
-
     let (tx, _rx) = broadcast::channel(100);
-
     let app_state = Arc::new(AppState {
         count: Mutex::new(0),
         error_map,
+        disable_health_dump: cli.disable_health_dump,
+        err_resp_warn: cli.err_resp_warn,
         tx,
     });
+
     tracing::debug!("AppState:  {:#?} ", app_state);
     let app = Router::new()
         .fallback_service(get(not_found))
@@ -205,11 +225,15 @@ async fn print_request_response(
     req: Request,
     next: Next,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    if state.disable_health_dump && req.method() == Method::GET && req.uri().path() == "/health" {
+        return Ok(Html("").into_response());
+    }
     let (parts, body) = req.into_parts();
     let bytes = buffer_and_print(
         format!("Request: {:?}", parts).as_str(),
         body,
         state.tx.clone(),
+        false,
     )
     .await?;
     let req = Request::from_parts(parts, Body::from(bytes));
@@ -217,10 +241,12 @@ async fn print_request_response(
     let res = next.run(req).await;
 
     let (parts, body) = res.into_parts();
+    let log_warn = parts.status.as_u16() > 299 && state.err_resp_warn;
     let bytes = buffer_and_print(
         format!("Response: {:?}", parts).as_str(),
         body,
         state.tx.clone(),
+        log_warn,
     )
     .await?;
     let res = Response::from_parts(parts, Body::from(bytes));
@@ -232,6 +258,7 @@ async fn buffer_and_print<B>(
     direction: &str,
     body: B,
     tx: Sender<String>,
+    log_warn: bool,
 ) -> Result<Bytes, (StatusCode, String)>
 where
     B: axum::body::HttpBody<Data = Bytes>,
@@ -249,7 +276,11 @@ where
 
     if let Ok(body) = std::str::from_utf8(&bytes) {
         let _ = tx.send(format!("{direction} body = {body:?}"));
-        tracing::info!("{direction} body = {body:?}");
+        if log_warn {
+            tracing::warn!("{direction} body = {body:?}");
+        } else {
+            tracing::info!("{direction} body = {body:?}");
+        }
     }
 
     Ok(bytes)
